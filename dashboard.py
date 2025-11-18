@@ -89,11 +89,13 @@ class Dashboard(Widget):
         self.gear_label = Label(text="P", font_size="80sp", color=(0.9,0.9,1,1))
         self.temp_label = Label(text="Bat 22°C | Motor 30°C", font_size="26sp", color=(0.7,0.7,0.8,1))
 
+        # icons
         self.left_icon = Image(source="icons/left.png", color=(0.25,0.25,0.3,1))
         self.low_icon  = Image(source="icons/low.png",  color=(0.25,0.25,0.3,1))
         self.high_icon = Image(source="icons/high.png", color=(0.25,0.25,0.3,1))
         self.right_icon= Image(source="icons/right.png",color=(0.25,0.25,0.3,1))
 
+        # add everything
         self.add_widget(self.rpm_gauge)
         self.add_widget(self.soc_gauge)
         self.add_widget(self.speed_label)
@@ -107,30 +109,35 @@ class Dashboard(Widget):
 
         Clock.schedule_interval(self.update_ui, 0.05)
 
+
+    # ---------- LAYOUT ----------
     def do_layout(self, *args):
         w, h = Window.size
 
-        # positions
+        # gauge positions
         self.rpm_gauge.pos = (w*0.07, h*0.15)
         self.rpm_gauge.size = (w*0.35, w*0.35)
 
         self.soc_gauge.pos = (w*0.58, h*0.15)
         self.soc_gauge.size = (w*0.35, w*0.35)
 
+        # text
         self.speed_label.pos = (w*0.43, h*0.6)
         self.unit_label.pos = (w*0.46, h*0.52)
         self.gear_label.pos = (w*0.465, h*0.42)
         self.temp_label.pos = (w*0.38, h*0.12)
 
-        # icon bar
+        # icons top
         self.left_icon.pos  = (w*0.03, h*0.85)
         self.low_icon.pos   = (w*0.20, h*0.85)
         self.high_icon.pos  = (w*0.78, h*0.85)
         self.right_icon.pos = (w*0.90, h*0.85)
 
-        for i in [self.left_icon,self.low_icon,self.high_icon,self.right_icon]:
-            i.size = (60,60)
+        for i in [self.left_icon, self.low_icon, self.high_icon, self.right_icon]:
+            i.size = (60, 60)
 
+
+    # ---------- UI UPDATE ----------
     def update_ui(self, dt):
         self.do_layout()
 
@@ -143,12 +150,59 @@ class Dashboard(Widget):
         self.rpm_gauge.set(self.ui["rpm"])
         self.soc_gauge.set(self.ui["soc"])
 
+        # text updates
         self.speed_label.text = str(int(self.ui["speed"]))
         self.gear_label.text = self.state["gear"]
         self.temp_label.text = f"Bat {self.state['bat_temp']}°C | Motor {self.state['motor_temp']}°C"
 
-        # icons
+        # icons ON/OFF
         off = (0.25,0.25,0.3,1)
-        self.left_icon.color  = (0,1,0,1) if self.state["left"] else off
+
+        self.left_icon.color  = (0,1,0,1) if self.state["left"]  else off
         self.right_icon.color = (0,1,0,1) if self.state["right"] else off
-        self.low_ic_
+        self.low_icon.color   = (1,1,1,1) if self.state["low"]   else off
+        self.high_icon.color  = (0.3,0.6,1,1) if self.state["high"] else off
+
+
+# ---------- MAIN APP ----------
+class EVDashboardApp(App):
+    def build(self):
+        self.dashboard = Dashboard()
+        threading.Thread(target=self.read_can, daemon=True).start()
+        return self.dashboard
+
+    def read_can(self):
+        bus = can.interface.Bus(channel="can0", bustype="socketcan")
+
+        for msg in bus:
+            s = self.dashboard.state
+
+            if msg.arbitration_id == 0x180:
+                s["speed"] = msg.data[0]
+
+            elif msg.arbitration_id == 0x181:
+                s["rpm"] = (msg.data[0] << 8) | msg.data[1]
+
+            elif msg.arbitration_id == 0x182:
+                s["soc"] = msg.data[0]
+
+            elif msg.arbitration_id == 0x183:
+                idx = msg.data[0] if msg.data[0] < 4 else 0
+                s["gear"] = ["P","R","N","D"][idx]
+
+            elif msg.arbitration_id == 0x184:
+                flags = msg.data[0]
+                s["left"]  = bool(flags & 1)
+                s["right"] = bool(flags & 2)
+                s["low"]   = bool(flags & 4)
+                s["high"]  = bool(flags & 8)
+
+            elif msg.arbitration_id == 0x185:
+                s["bat_temp"] = msg.data[0]
+
+            elif msg.arbitration_id == 0x186:
+                s["motor_temp"] = msg.data[0]
+
+
+if __name__ == "__main__":
+    EVDashboardApp().run()
