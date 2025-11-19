@@ -1,0 +1,5 @@
+pygame
+python-can
+
+pygame>=2.1
+python-can>=4.0
