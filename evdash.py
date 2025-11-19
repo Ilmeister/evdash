@@ -8,10 +8,11 @@ import sys
 import pygame
 import pygame.freetype
 
+# python-can on vapaaehtoinen (demo toimii ilman)
 try:
     import can
 except ImportError:
-    can = None  # Demo-tila toimii ilman python-can:ia
+    can = None
 
 # --------------------------------------------------------------------------------------
 # KONFIGURAATIO
@@ -19,10 +20,9 @@ except ImportError:
 
 SCREEN_WIDTH = 2000
 SCREEN_HEIGHT = 800
-FULLSCREEN = True
 
-MAX_SPEED = 180.0  # km/h
-MAX_SOC = 100.0
+MAX_SPEED = 180.0   # km/h
+MAX_SOC = 100.0     # %
 
 CAN_CHANNEL = "can0"
 CAN_BITRATE = 500000  # vain dokumentaatiota varten
@@ -32,6 +32,8 @@ CAN_ID_SPEED = 0x100       # uint16, km/h * 100
 CAN_ID_SOC = 0x200         # uint8, 0–100 %
 CAN_ID_GEAR = 0x310        # uint8, 0=P,1=R,2=N,3=D
 CAN_ID_MODE = 0x300        # uint8, 0=ECO,1=NORMAL,2=SPORT
+
+BOOT_FADE_SECONDS = 1.0    # boot-animaation kesto
 
 # --------------------------------------------------------------------------------------
 # TILA
@@ -45,18 +47,14 @@ class DashboardState:
         self.gear_target = "P"
         self.mode_target = "NORMAL"
 
-        # Näytöllä näkyvät arvot (animoidut)
+        # Näytöllä näkyvät arvot (pehmennetty animaatio)
         self.speed_display = 0.0
         self.soc_display = 80.0
-
         self.gear_display = "P"
         self.mode_display = "NORMAL"
 
-        # Demo moodi
         self.demo = False
         self.running = True
-
-        # Thread-turvallisuus
         self._lock = threading.Lock()
 
     def set_from_can(self, speed=None, soc=None, gear=None, mode=None):
@@ -76,7 +74,7 @@ class DashboardState:
                 self.speed_target,
                 self.soc_target,
                 self.gear_target,
-                self.mode_target
+                self.mode_target,
             )
 
 # --------------------------------------------------------------------------------------
@@ -84,12 +82,8 @@ class DashboardState:
 # --------------------------------------------------------------------------------------
 
 def can_reader_thread(state: DashboardState):
-    """
-    Lukee CAN-väylää ja päivittää tilaa.
-    Jos CAN ei toimi -> thread kuolee hiljaa ja näyttö jää viimeisiin arvoihin.
-    """
     if can is None:
-        print("[evdash] python-can ei asennettu, CAN-lukija ohitetaan.")
+        print("[evdash] python-can ei asennettu, CAN-lukijaa ei käynnistetä.")
         return
 
     try:
@@ -107,7 +101,7 @@ def can_reader_thread(state: DashboardState):
 
             if msg.arbitration_id == CAN_ID_SPEED and len(msg.data) >= 2:
                 raw = int.from_bytes(msg.data[0:2], byteorder="big", signed=False)
-                speed = raw / 100.0  # esim. 12345 -> 123.45 km/h
+                speed = raw / 100.0
                 state.set_from_can(speed=speed)
 
             elif msg.arbitration_id == CAN_ID_SOC and len(msg.data) >= 1:
@@ -132,16 +126,13 @@ def can_reader_thread(state: DashboardState):
 
 
 def demo_driver_thread(state: DashboardState):
-    """
-    Demo-tila: animoidaan nopeus ja SOC ilman CANia.
-    """
+    """Simuloitu data, kun ajetaan --demo."""
     t0 = time.time()
     while state.running and state.demo:
         t = time.time() - t0
 
         speed = (math.sin(t * 0.3) * 0.5 + 0.5) * MAX_SPEED
-        soc = (math.sin(t * 0.05) * 0.5 + 0.5) * 40 + 40  # 40–80 %
-        # Vaihde ja moodi vaihtelee hitaasti
+        soc = (math.sin(t * 0.05) * 0.5 + 0.5) * 40 + 40  # ~40–80 %
         modes = ["ECO", "NORMAL", "SPORT"]
         gears = ["D", "R", "N", "P"]
         mode = modes[int((t / 10) % len(modes))]
@@ -178,50 +169,46 @@ def draw_gauge(surface, center, radius, value, max_value,
                font_large, font_small, current_time):
     cx, cy = center
 
-    # Tausta: hienovarainen tummempi ympyrä
     pygame.draw.circle(surface, (10, 10, 30), center, radius + 20)
     pygame.draw.circle(surface, (20, 20, 50), center, radius)
 
-    # Hehku (accent)
     glow = create_radial_glow(radius + 30, main_color)
     glow_rect = glow.get_rect(center=center)
     surface.blit(glow, glow_rect, special_flags=pygame.BLEND_ADD)
 
-    # Asteikon kulmat (esim. 220° kaari)
     start_angle_deg = 160
     end_angle_deg = 380
     angle_span = end_angle_deg - start_angle_deg
 
-    # Taustakaari
     rect = pygame.Rect(0, 0, radius * 2, radius * 2)
     rect.center = center
     track_color = (40, 40, 90)
-    for thickness in range(16, 24):
-        pygame.draw.arc(surface, track_color, rect, math.radians(start_angle_deg),
-                        math.radians(end_angle_deg), thickness)
 
-    # Täytetty kaari (value)
-    t = max(0.0, min(1.0, value / max_value)) if max_value > 0 else 0.0
-    value_angle = start_angle_deg + angle_span * t
+    for thickness in range(16, 24):
+        pygame.draw.arc(
+            surface, track_color, rect,
+            math.radians(start_angle_deg),
+            math.radians(end_angle_deg),
+            thickness,
+        )
+
+    t_val = max(0.0, min(1.0, value / max_value)) if max_value > 0 else 0.0
+    value_angle = start_angle_deg + angle_span * t_val
 
     for thickness in range(18, 22):
         pygame.draw.arc(
-            surface,
-            main_color,
-            rect,
+            surface, main_color, rect,
             math.radians(start_angle_deg),
             math.radians(value_angle),
-            thickness
+            thickness,
         )
 
-    # "Sweep highlight" animoitu
     sweep_pos = (current_time * 60) % angle_span + start_angle_deg
     sweep_rad = math.radians(sweep_pos)
     sx = cx + math.cos(sweep_rad) * (radius - 5)
     sy = cy + math.sin(sweep_rad) * (radius - 5)
     pygame.draw.circle(surface, accent_color, (int(sx), int(sy)), 8)
 
-    # Neula
     needle_angle = math.radians(value_angle)
     nx = cx + math.cos(needle_angle) * (radius - 30)
     ny = cy + math.sin(needle_angle) * (radius - 30)
@@ -229,19 +216,15 @@ def draw_gauge(surface, center, radius, value, max_value,
     pygame.draw.circle(surface, (15, 15, 35), (cx, cy), 14)
     pygame.draw.circle(surface, accent_color, (cx, cy), 6)
 
-    # Tekstit
-    # Arvo iso
     value_text = f"{int(round(value))}"
     value_rect = font_large.get_rect(value_text)
     value_rect.center = (cx, cy - 10)
     font_large.render_to(surface, value_rect, value_text, (240, 240, 255))
 
-    # Yksikkö
     unit_rect = font_small.get_rect(unit)
     unit_rect.center = (cx, cy + 40)
-    font_small.render_to(surface, unit_rect, unit, (150, 180, 255))
+    font_small.render_to(surface, unit_rect, unit, (160, 190, 255))
 
-    # Otsikko
     title_rect = font_small.get_rect(title)
     title_rect.center = (cx, cy + radius - 40)
     font_small.render_to(surface, title_rect, title, (180, 180, 200))
@@ -251,67 +234,58 @@ def draw_center_hud(surface, rect, speed, gear, mode, soc,
                     font_speed, font_medium, font_small, t):
     x, y, w, h = rect
 
-    # Kortti tausta gradientilla
     card_surf = pygame.Surface((w, h), pygame.SRCALPHA)
     draw_vertical_gradient(card_surf, (10, 10, 40), (5, 5, 20))
-
-    # Reunat
     pygame.draw.rect(card_surf, (40, 70, 120), (0, 0, w, h), 2, border_radius=26)
 
-    # Nopeus iso keskellä
     speed_text = f"{int(round(speed))}"
     speed_rect = font_speed.get_rect(speed_text)
     speed_rect.midtop = (w // 2, 40)
     font_speed.render_to(card_surf, speed_rect, speed_text, (240, 240, 255))
 
-    # "km/h" alle
     unit_text = "km/h"
     unit_rect = font_medium.get_rect(unit_text)
     unit_rect.midtop = (w // 2, speed_rect.bottom + 10)
     font_medium.render_to(card_surf, unit_rect, unit_text, (160, 190, 255))
 
-    # Vaihde vasemmalle
-    gear_label = f"GEAR"
-    gear_value = gear
+    gear_label = "GEAR"
     gear_label_rect = font_small.get_rect(gear_label)
     gear_label_rect.topleft = (60, h - 120)
     font_small.render_to(card_surf, gear_label_rect, gear_label, (150, 170, 210))
 
-    gear_value_rect = font_medium.get_rect(gear_value)
+    gear_value_rect = font_medium.get_rect(gear)
     gear_value_rect.topleft = (60, h - 90)
-    font_medium.render_to(card_surf, gear_value_rect, gear_value, (240, 240, 255))
+    font_medium.render_to(card_surf, gear_value_rect, gear, (240, 240, 255))
 
-    # Mode oikealle
     mode_label = "MODE"
     mode_label_rect = font_small.get_rect(mode_label)
     mode_label_rect.topright = (w - 60, h - 120)
     font_small.render_to(card_surf, mode_label_rect, mode_label, (150, 170, 210))
 
+    if mode == "SPORT":
+        mode_color = (255, 90, 110)
+    elif mode == "ECO":
+        mode_color = (110, 255, 160)
+    else:
+        mode_color = (200, 220, 255)
+
     mode_value_rect = font_medium.get_rect(mode)
     mode_value_rect.topright = (w - 60, h - 90)
-    # Korostetaan SPORT tummemman punertavalla sävyllä
-    if mode == "SPORT":
-        color = (255, 90, 110)
-    elif mode == "ECO":
-        color = (110, 255, 160)
-    else:
-        color = (200, 220, 255)
-    font_medium.render_to(card_surf, mode_value_rect, mode, color)
+    font_medium.render_to(card_surf, mode_value_rect, mode, mode_color)
 
-    # SOC progress bar (akun varaus) alareunaan
     bar_margin_x = 140
     bar_width = w - bar_margin_x * 2
     bar_height = 24
     bar_x = bar_margin_x
     bar_y = h - 60
 
-    pygame.draw.rect(card_surf, (25, 30, 60), (bar_x, bar_y, bar_width, bar_height),
+    pygame.draw.rect(card_surf, (25, 30, 60),
+                     (bar_x, bar_y, bar_width, bar_height),
                      border_radius=12)
 
     fill_t = max(0.0, min(1.0, soc / 100.0))
     fill_w = int(bar_width * fill_t)
 
-    # Gradient-like efekti SOC bar: vihreä -> keltainen -> punainen
     if soc > 60:
         fill_color = (80, 220, 120)
     elif soc > 30:
@@ -323,13 +297,11 @@ def draw_center_hud(surface, rect, speed, gear, mode, soc,
                      (bar_x, bar_y, fill_w, bar_height),
                      border_radius=12)
 
-    # Teksti "SOC xx%"
     soc_text = f"{int(round(soc))}%"
     soc_rect = font_small.get_rect(soc_text)
     soc_rect.center = (w // 2, bar_y + bar_height // 2)
     font_small.render_to(card_surf, soc_rect, soc_text, (10, 10, 20))
 
-    # Kevyt pulssi (kokonainen kortti hiukan "hengittää")
     scale = 1.0 + 0.01 * math.sin(t * 1.2)
     scaled_w = int(w * scale)
     scaled_h = int(h * scale)
@@ -337,9 +309,8 @@ def draw_center_hud(surface, rect, speed, gear, mode, soc,
     scaled_rect = scaled_surf.get_rect(center=(x + w // 2, y + h // 2))
     surface.blit(scaled_surf, scaled_rect)
 
-
 # --------------------------------------------------------------------------------------
-# PÄÄLOOPPI
+# PÄÄ
 # --------------------------------------------------------------------------------------
 
 def main():
@@ -351,28 +322,21 @@ def main():
     state = DashboardState()
     state.demo = args.demo
 
-    # Käynnistetään CAN-lukija jos ei demo
-    can_thread = None
     if not state.demo:
-        can_thread = threading.Thread(
-            target=can_reader_thread, args=(state,), daemon=True
-        )
-        can_thread.start()
+        threading.Thread(target=can_reader_thread,
+                         args=(state,), daemon=True).start()
     else:
-        demo_thread = threading.Thread(
-            target=demo_driver_thread, args=(state,), daemon=True
-        )
-        demo_thread.start()
+        threading.Thread(target=demo_driver_thread,
+                         args=(state,), daemon=True).start()
 
-    # Pygame init
     pygame.init()
     pygame.freetype.init()
 
-    flags = pygame.FULLSCREEN if FULLSCREEN else 0
-    screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT), flags)
+    screen = pygame.display.set_mode(
+        (SCREEN_WIDTH, SCREEN_HEIGHT), pygame.FULLSCREEN
+    )
     pygame.display.set_caption("evdash – EV Dashboard")
 
-    # Fontit (fallback jos Montserrat ei löydy)
     font_main = pygame.freetype.SysFont("Montserrat", 64)
     font_speed = pygame.freetype.SysFont("Montserrat", 120)
     font_medium = pygame.freetype.SysFont("Montserrat", 48)
@@ -380,9 +344,10 @@ def main():
 
     clock = pygame.time.Clock()
     running = True
+    start_time = time.time()
 
     while running:
-        dt_ms = clock.tick(60)  # 60 FPS
+        dt_ms = clock.tick(60)
         dt = dt_ms / 1000.0
         t = pygame.time.get_ticks() / 1000.0
 
@@ -392,46 +357,35 @@ def main():
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     running = False
-                elif event.key == pygame.K_f:
-                    # Fullscreen toggle (vain debugiin, ei välttämätön autossa)
-                    global FULLSCREEN
-                    FULLSCREEN = not FULLSCREEN
-                    flags = pygame.FULLSCREEN if FULLSCREEN else 0
-                    screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT), flags)
                 elif event.key == pygame.K_d:
-                    # Toggle demo-tila lennosta
                     state.demo = not state.demo
                     if state.demo:
-                        demo_thread = threading.Thread(
-                            target=demo_driver_thread, args=(state,), daemon=True
-                        )
-                        demo_thread.start()
+                        threading.Thread(target=demo_driver_thread,
+                                         args=(state,), daemon=True).start()
 
-        # Haetaan uusin CAN-tavoitetila
         speed_target, soc_target, gear_target, mode_target = state.get_snapshot()
 
-        # Smooth animaatio (krit damping tyyli)
-        smooth_factor = min(1.0, dt * 5.0)  # mitä isompi, sitä nopeampi
+        smooth_factor = min(1.0, dt * 5.0)
         state.speed_display = lerp(state.speed_display, speed_target, smooth_factor)
         state.soc_display = lerp(state.soc_display, soc_target, smooth_factor)
         state.gear_display = gear_target
         state.mode_display = mode_target
 
-        # PIIRTO
-        # Taustagradientti: tumma neon sinertävä
-        draw_vertical_gradient(screen, (4, 6, 20), (2, 2, 10))
+        # Boot fade -kerroin (0 -> 1 ensimmäisen sekunnin aikana)
+        fade_factor = max(0.0, min(1.0,
+                            (time.time() - start_time) / BOOT_FADE_SECONDS))
 
-        # Pieni "viiva" yläreunaan
-        pygame.draw.rect(screen, (40, 80, 160), (0, 0, SCREEN_WIDTH, 4))
+        # Piirretään kaikki offscreen-surfaceen ja blendataan alpha:lla
+        frame = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        draw_vertical_gradient(frame, (4, 6, 20), (2, 2, 10))
+        pygame.draw.rect(frame, (40, 80, 160), (0, 0, SCREEN_WIDTH, 4))
 
-        # Gaugejen paikat
         left_center = (SCREEN_WIDTH // 4, SCREEN_HEIGHT // 2 + 80)
         right_center = (SCREEN_WIDTH * 3 // 4, SCREEN_HEIGHT // 2 + 80)
         gauge_radius = 260
 
-        # Vasen: nopeus gauge
         draw_gauge(
-            screen,
+            frame,
             left_center,
             gauge_radius,
             state.speed_display,
@@ -442,12 +396,11 @@ def main():
             accent_color=(120, 220, 255),
             font_large=font_medium,
             font_small=font_small,
-            current_time=t
+            current_time=t,
         )
 
-        # Oikea: SOC gauge
         draw_gauge(
-            screen,
+            frame,
             right_center,
             gauge_radius,
             state.soc_display,
@@ -458,18 +411,17 @@ def main():
             accent_color=(140, 255, 200),
             font_large=font_medium,
             font_small=font_small,
-            current_time=t
+            current_time=t,
         )
 
-        # Keskihud
         center_rect = (
             SCREEN_WIDTH // 2 - 350,
             80,
             700,
-            400
+            400,
         )
         draw_center_hud(
-            screen,
+            frame,
             center_rect,
             speed=state.speed_display,
             gear=state.gear_display,
@@ -478,14 +430,21 @@ def main():
             font_speed=font_speed,
             font_medium=font_medium,
             font_small=font_small,
-            t=t
+            t=t,
         )
 
-        # Alapalkki: pieni status-teksti
-        bottom_text = "evdash – ESC quit · D demo toggle · F fullscreen toggle (debug)"
+        bottom_text = "evdash – ESC quit · D demo toggle"
         text_rect = font_small.get_rect(bottom_text)
         text_rect.midbottom = (SCREEN_WIDTH // 2, SCREEN_HEIGHT - 20)
-        font_small.render_to(screen, text_rect, bottom_text, (120, 130, 170))
+        font_small.render_to(frame, text_rect, bottom_text, (120, 130, 170))
+
+        # Boot fade: koko frame blitataan alpha-skaalattuna
+        if fade_factor < 1.0:
+            temp = frame.copy()
+            temp.set_alpha(int(255 * fade_factor))
+            screen.blit(temp, (0, 0))
+        else:
+            screen.blit(frame, (0, 0))
 
         pygame.display.flip()
 
